@@ -1,0 +1,196 @@
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h> 
+#include "HX711.h" 
+#include <Servo.h> 
+#include "pitches.h" 
+ 
+// notes in the melody: 
+int melody[] = { 
+  NOTE_C4, NOTE_G3, NOTE_G3, NOTE_A3, NOTE_G3, 0, NOTE_B3, NOTE_C4 
+}; 
+ 
+// note durations: 4 = quarter note, 8 = eighth note, etc.: 
+int noteDurations[] = { 
+  4, 8, 8, 4, 4, 4, 4, 4 
+}; 
+ 
+#define CALIBRATION_FACTOR 6050 // Adjust this based on calibration 
+#define LOADCELL_DOUT_PIN 5 
+#define LOADCELL_SCK_PIN 4 
+#define LCD_ADDRESS 0x27 // <--- IMPORTANT: Change this if needed! 
+#define START_BUTTON_PIN 2  // Example: Using pin 2 - ADJUST AS NEEDED 
+#define SPEAKER_PIN 8 // Define the speaker pin - ADJUST AS NEEDED 
+ 
+LiquidCrystal_I2C lcd(LCD_ADDRESS, 16, 2); 
+Servo myservo; 
+HX711 scale; 
+ 
+unsigned long startTime; 
+unsigned long countdownTime; 
+ 
+void setup() { 
+  Serial.begin(9600); 
+  pinMode(13, OUTPUT); 
+  myservo.attach(6); 
+  myservo.write(0);  // Initialize servo to 0 degrees 
+  Serial.println("HX711 scale demo"); 
+ 
+  pinMode(START_BUTTON_PIN, INPUT_PULLUP); // Button pin setup 
+  pinMode(SPEAKER_PIN, OUTPUT); // Speaker pin setup 
+ 
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN); 
+  scale.set_scale(CALIBRATION_FACTOR); 
+  scale.tare(); 
+ 
+  Serial.println("Scale initialized."); 
+ 
+  Wire.begin(); 
+  lcd.init(); 
+  lcd.backlight(); 
+ 
+  lcd.print("Press button to"); 
+  lcd.setCursor(0, 1); 
+  lcd.print("start process"); 
+ 
+  waitForButtonPress();  // Wait for the FIRST button press 
+ 
+  lcd.clear(); 
+  runProcess();    // Run the process ONCE 
+} 
+ 
+void loop() { 
+  int buttonState = digitalRead(START_BUTTON_PIN); 
+ 
+  if (buttonState == LOW) { // Button pressed 
+    delay(50); // Debouncing delay 
+ 
+    if (digitalRead(START_BUTTON_PIN) == LOW) { 
+      lcd.clear(); 
+      runProcess(); 
+    } 
+ 
+    while (digitalRead(START_BUTTON_PIN) == LOW) {} // Wait for release 
+  } 
+} 
+ 
+void waitForButtonPress() { 
+  while (digitalRead(START_BUTTON_PIN) == HIGH) { // Wait for button to be HIGH (not pressed) 
+    delay(10); 
+  } 
+ 
+  // Button is now LOW (pressed). Wait for it to be released. 
+  while (digitalRead(START_BUTTON_PIN) == LOW) { 
+    delay(10); 
+  } 
+  delay(50); // Debouncing delay 
+} 
+ 
+void runProcess() { 
+  // --- Initial Countdown (BEFORE reading weight) --- 
+  unsigned long initialCountdown = 5000; 
+  lcd.print("Put weight in: "); 
+  startTime = millis(); 
+  while (millis() - startTime < initialCountdown) { 
+    unsigned long timeLeft = (initialCountdown - (millis() - startTime)) / 1000; 
+    lcd.setCursor(14, 0); 
+    lcd.print(timeLeft); 
+    lcd.print(" s"); 
+    delay(250); 
+  } 
+  lcd.clear(); 
+ 
+  // --- Read weight --- 
+  float weight = scale.get_units(); 
+  if (weight < 0) weight = 0; 
+ 
+  Serial.print("Weight: "); 
+  Serial.print(weight, 1); 
+  Serial.println("kg"); 
+ 
+  lcd.setCursor(8, 0); 
+  lcd.print(weight, 1); 
+  lcd.print("kg"); 
+  delay(1000); 
+  lcd.clear(); 
+ 
+  int servoPosition = -1; 
+  String displayMessage = "Out of Range"; 
+ 
+  if (weight >= 0 && weight <= 0.149) { 
+    servoPosition = 90; 
+    countdownTime = 10000; 
+  } else if (weight >= 0.15 && weight <= 0.209) { 
+    servoPosition = 90; 
+    countdownTime = 20000; 
+  } else if (weight >= 0.210 && weight <= 0.309) { 
+    servoPosition = 90; 
+    countdownTime = 30000; 
+  } else if (weight >= 0.40 && weight <= 100.0) { 
+    servoPosition = 90; 
+    countdownTime = 40000; 
+  } 
+ 
+  if (servoPosition != -1) { 
+    // --- Cooking countdown --- 
+    lcd.setCursor(0, 1); 
+    lcd.print("COOKING"); 
+    delay(50); 
+    startTime = millis(); 
+    unsigned long previousTime = startTime; 
+ 
+    while (millis() - startTime < countdownTime) { 
+      if (millis() - previousTime >= 1000) { 
+        unsigned long timeLeft = (countdownTime - (millis() - startTime)) / 1000; 
+        lcd.setCursor(15, 1); 
+        lcd.print(timeLeft); 
+        previousTime = millis(); 
+      } 
+      delay(10); 
+    } 
+    lcd.clear(); 
+ 
+    myservo.write(servoPosition); 
+    Serial.print("Servo moved to: "); 
+    Serial.println(servoPosition); 
+ 
+    // --- Draining countdown ---
+    lcd.setCursor(0, 1); 
+    lcd.print("draining"); 
+    delay(50); 
+    startTime = millis(); 
+    previousTime = startTime; 
+ 
+    while (millis() - startTime < countdownTime) { 
+      if (millis() - previousTime >= 1000) { 
+        unsigned long timeLeft = (countdownTime - (millis() - startTime)) / 1000; 
+        lcd.setCursor(12, 1); 
+        lcd.print(timeLeft); 
+        previousTime = millis(); 
+      } 
+      delay(10); 
+    } 
+    lcd.clear(); 
+ 
+    // --- Servo return and "Ready" message --- 
+    myservo.write(0); 
+    Serial.print("Servo returned to default position."); 
+    lcd.setCursor(0, 1); 
+    lcd.print("Ready"); 
+ 
+    // Play melody *after* "Ready" is displayed 
+    for (int thisNote = 0; thisNote < 8; thisNote++) { 
+      int noteDuration = 1000 / noteDurations[thisNote]; 
+      tone(SPEAKER_PIN, melody[thisNote], noteDuration); // Use SPEAKER_PIN 
+      int pauseBetweenNotes = noteDuration * 1.30; 
+      delay(pauseBetweenNotes); 
+      noTone(SPEAKER_PIN); // Use SPEAKER_PIN 
+    } 
+ 
+  } else { 
+    // --- Out of Range message --- 
+    lcd.setCursor(0, 1); 
+    lcd.print(displayMessage); 
+    // Removed delay and clear here 
+  } 
+}
+  
